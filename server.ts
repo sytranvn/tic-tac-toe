@@ -3,9 +3,6 @@ import { parse } from 'url';
 import next from 'next';
 import { Server } from 'socket.io';
 import express from 'express';
-import { db } from './db/index';
-import { games as gamesTable, moves as movesTable } from './db/schema';
-import { eq } from 'drizzle-orm';
 
 const dev = process.env.NODE_ENV !== 'production';
 const app = next({ dev });
@@ -23,7 +20,7 @@ app.prepare().then(() => {
   io.on('connection', (socket) => {
     console.log('a user connected', socket.id);
 
-    socket.on('find_match', async ({ boardSize = 3 } = {}) => {
+    socket.on('find_match', ({ boardSize = 3 } = {}) => {
       const size = Number(boardSize);
       const waitingPlayer = waitingPlayers.get(size);
 
@@ -50,21 +47,6 @@ app.prepare().then(() => {
 
         games.set(gameId, gameState);
 
-        // Save to DB
-        try {
-          await db.insert(gamesTable).values({
-            id: gameId,
-            size: gameState.size,
-            winLength: gameState.winLength,
-            playerX: playerX,
-            playerO: playerO,
-            status: 'active',
-            createdAt: new Date(),
-          });
-        } catch (err) {
-          console.error('Error saving game to DB:', err);
-        }
-
         // Join both to the room
         const socketX = io.sockets.sockets.get(playerX);
         if (socketX) {
@@ -90,7 +72,7 @@ app.prepare().then(() => {
       }
     });
 
-    socket.on('make_move', async ({ gameId, index }) => {
+    socket.on('make_move', ({ gameId, index }) => {
       const game = games.get(gameId);
       if (!game || game.status !== 'active') return;
 
@@ -102,19 +84,6 @@ app.prepare().then(() => {
       game.board[index] = playerRole;
       game.nextPlayer = playerRole === 'X' ? 'O' : 'X';
 
-      // Save move to DB
-      try {
-        await db.insert(movesTable).values({
-          gameId: gameId,
-          playerId: socket.id,
-          playerRole: playerRole,
-          cellIndex: index,
-          timestamp: new Date(),
-        });
-      } catch (err) {
-        console.error('Error saving move to DB:', err);
-      }
-
       // Check for winner
       const winner = calculateWinner(game.board, game.size, game.winLength);
       if (winner) {
@@ -125,24 +94,10 @@ app.prepare().then(() => {
         game.winner = 'draw';
       }
 
-      if (game.status === 'finished') {
-        try {
-          await db.update(gamesTable)
-            .set({ 
-              status: 'finished', 
-              winner: game.winner, 
-              finishedAt: new Date() 
-            })
-            .where(eq(gamesTable.id, gameId));
-        } catch (err) {
-          console.error('Error updating game in DB:', err);
-        }
-      }
-
       io.to(gameId).emit('game_update', game);
     });
 
-    socket.on('request_rematch', async ({ gameId }) => {
+    socket.on('request_rematch', ({ gameId }) => {
       const game = games.get(gameId);
       if (!game || game.status !== 'finished') return;
 
@@ -153,35 +108,12 @@ app.prepare().then(() => {
 
       if (game.rematchRequests.length === 2) {
         // Reset game
-        const newGameId = `game_${game.players.X}_${game.players.O}_${Date.now()}`;
-        game.id = newGameId;
         game.board = Array(game.size * game.size).fill(null);
         game.status = 'active';
         game.winner = null;
         game.rematchRequests = [];
         // Swap starting player for variety
         game.nextPlayer = Math.random() > 0.5 ? 'X' : 'O';
-
-        // Save new game to DB
-        try {
-          await db.insert(gamesTable).values({
-            id: newGameId,
-            size: game.size,
-            winLength: game.winLength,
-            playerX: game.players.X,
-            playerO: game.players.O,
-            status: 'active',
-            createdAt: new Date(),
-          });
-        } catch (err) {
-          console.error('Error saving rematch game to DB:', err);
-        }
-
-        // Update games map with new ID
-        games.set(newGameId, game);
-        // Note: We don't delete the old game from the map immediately, but we could.
-        // For simplicity, we just add the new one.
-
         io.to(gameId).emit('game_update', game);
       } else {
         // Notify other player
@@ -189,7 +121,7 @@ app.prepare().then(() => {
       }
     });
 
-    socket.on('disconnect', async () => {
+    socket.on('disconnect', () => {
       console.log('user disconnected', socket.id);
       // Remove from all queues
       for (const [size, id] of waitingPlayers.entries()) {
@@ -204,26 +136,12 @@ app.prepare().then(() => {
           if (game.status === 'active') {
             game.status = 'finished';
             game.winner = game.players.X === socket.id ? 'O' : 'X'; // Opponent wins
-            
-            try {
-              await db.update(gamesTable)
-                .set({ 
-                  status: 'finished', 
-                  winner: game.winner, 
-                  finishedAt: new Date() 
-                })
-                .where(eq(gamesTable.id, gameId));
-            } catch (err) {
-              console.error('Error updating abandoned game in DB:', err);
-            }
-
             io.to(gameId).emit('game_update', game);
           }
         }
       }
     });
   });
-
 
   expressApp.all(/.*/, (req, res) => {
     const parsedUrl = parse(req.url!, true);
