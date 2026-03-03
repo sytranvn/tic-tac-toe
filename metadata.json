@@ -1,0 +1,5 @@
+{
+  "name": "Tic Tac Toe Online",
+  "description": "A real-time, multi-player Tic Tac Toe game with random matchmaking and concurrent sessions.",
+  "requestFramePermissions": []
+}
